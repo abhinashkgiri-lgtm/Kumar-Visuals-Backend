@@ -159,7 +159,7 @@ const registerLimiter = rateLimit({
   skip: (req) => req.method === "OPTIONS",
 });
 
-app.use("/api/auth/login", loginLimiter);
+// app.use("/api/auth/login", loginLimiter); comment out after test
 app.use("/api/auth/register", registerLimiter);
 app.use("/api", apiLimiter);
 
