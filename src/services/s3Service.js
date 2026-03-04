@@ -35,7 +35,7 @@ export async function uploadBufferToS3({ buffer, key, contentType }) {
     ContentType: contentType,
     ContentLength: buffer.length,
     CacheControl: "public, max-age=31536000, immutable",
-    ServerSideEncryption: "AES256",
+    // ServerSideEncryption: "AES256",
   });
 
   await s3Client.send(cmd);
@@ -56,7 +56,7 @@ export async function createUploadUrl({ key, contentType }) {
     Key: key,
     ContentType: contentType,
     CacheControl: "public, max-age=31536000, immutable",
-    ServerSideEncryption: "AES256",
+    // ServerSideEncryption: "AES256",
   });
 
   const uploadUrl = await getSignedUrl(s3Client, cmd, {
@@ -118,8 +118,9 @@ export function publicUrlFromKey(key) {
   if (CDN_BASE_URL) {
     return `${CDN_BASE_URL}/${key}`;
   }
-
-  return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
+  // Use your Backblaze S3 Endpoint for the public URL
+  return `https://${BUCKET}.s3.${REGION}.backblazeb2.com/${key}`;
+  // return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
 }
 
 /* ============================================================
