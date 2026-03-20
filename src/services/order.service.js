@@ -8,22 +8,7 @@ import MembershipPlan from "../models/MembershipPlan.model.js";
 const PROMO_CACHE = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
-function getCachedPromo(code) {
-  const cached = PROMO_CACHE.get(code);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
-  return null;
-}
 
-function setCachedPromo(code, data) {
-  PROMO_CACHE.set(code, { data, timestamp: Date.now() });
-  
-  if (PROMO_CACHE.size > 100) {
-    const firstKey = PROMO_CACHE.keys().next().value;
-    PROMO_CACHE.delete(firstKey);
-  }
-}
 
 export async function getMembershipMeta(planKey) {
   if (!planKey || typeof planKey !== "string") return null;
@@ -205,42 +190,28 @@ async function applyPromoCode(promoCode, subtotal) {
   }
 
   const code = promoCode.trim().toUpperCase();
-  
-  let promo = getCachedPromo(code);
-  
-  if (!promo) {
-    promo = await PromoCode.findOne({ code, isActive: true }).lean();
-    if (promo) {
-      setCachedPromo(code, promo);
-    }
-  }
+
+  // DO NOT use lean() here — we need schema methods
+  let promo = await PromoCode.findOne({ code, isActive: true });
 
   if (!promo) {
     throw new Error("Invalid or expired promo code");
   }
 
-  if (typeof promo.expiresAt === "string" || promo.expiresAt instanceof Date) {
-    const expiry = new Date(promo.expiresAt);
-    if (expiry <= new Date()) {
-      throw new Error("Promo code has expired");
-    }
+  // check expiry + usage limit using model method
+  if (promo.isExpired()) {
+    throw new Error("Promo code has expired or usage limit reached");
   }
 
+  // check minimum order amount
   if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
     throw new Error(`Minimum order amount: ₹${promo.minOrderAmount}`);
   }
 
-  let discount = 0;
+  // compute discount using schema method
+  let discount = promo.computeDiscount(subtotal);
 
-  if (promo.discountType === "PERCENTAGE") {
-    discount = (subtotal * promo.discountValue) / 100;
-    if (promo.maxDiscount) {
-      discount = Math.min(discount, promo.maxDiscount);
-    }
-  } else if (promo.discountType === "FIXED") {
-    discount = promo.discountValue;
-  }
-
+  // safety clamp
   discount = Math.min(discount, subtotal);
   discount = Number(discount.toFixed(2));
 
