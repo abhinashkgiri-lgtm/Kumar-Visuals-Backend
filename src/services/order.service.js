@@ -8,8 +8,6 @@ import MembershipPlan from "../models/MembershipPlan.model.js";
 const PROMO_CACHE = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
-
-
 export async function getMembershipMeta(planKey) {
   if (!planKey || typeof planKey !== "string") return null;
 
@@ -191,27 +189,22 @@ async function applyPromoCode(promoCode, subtotal) {
 
   const code = promoCode.trim().toUpperCase();
 
-  // DO NOT use lean() here — we need schema methods
   let promo = await PromoCode.findOne({ code, isActive: true });
 
   if (!promo) {
     throw new Error("Invalid or expired promo code");
   }
 
-  // check expiry + usage limit using model method
   if (promo.isExpired()) {
     throw new Error("Promo code has expired or usage limit reached");
   }
 
-  // check minimum order amount
   if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
     throw new Error(`Minimum order amount: ₹${promo.minOrderAmount}`);
   }
 
-  // compute discount using schema method
   let discount = promo.computeDiscount(subtotal);
 
-  // safety clamp
   discount = Math.min(discount, subtotal);
   discount = Number(discount.toFixed(2));
 
@@ -442,23 +435,28 @@ export async function markOrderPaidAndGrantAccess({
   session.startTransaction();
 
   try {
-    const order = await Order.findById(orderId).session(session);
-    
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: orderId,
+        status: "PENDING",
+      },
+      {
+        $set: {
+          status: "PROCESSING",
+        },
+      },
+      {
+        new: true,
+        session,
+      }
+    );
+
     if (!order) {
-      throw new Error("Order not found");
-    }
-
-    if (order.status === "PAID") {
       await session.commitTransaction();
-      return order;
+      return null;
     }
 
-    if (order.status !== "PENDING") {
-      throw new Error(`Cannot process order with status: ${order.status}`);
-    }
-
-    order.status = "PAID";
-    order.paymentId = paymentId;
+    order.paymentId = paymentId || "unknown";
     order.paymentSignature = paymentSignature;
     order.paymentRaw = paymentRaw;
     order.completedAt = new Date();
@@ -482,6 +480,9 @@ export async function markOrderPaidAndGrantAccess({
     } else {
       await grantProductAccess(order, user, session);
     }
+
+    order.status = "PAID";
+    await order.save({ session });
 
     await session.commitTransaction();
     return order;
