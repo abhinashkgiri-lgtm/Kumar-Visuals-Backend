@@ -2,6 +2,7 @@ import Joi from "joi";
 import mongoose from "mongoose";
 import ContactMessage from "../models/ContactMessage.model.js";
 import { sendEmail } from "../utils/mailer.js";
+import { getEmailSettings } from "../services/emailSettingsService.js";
 
 /* -------------------- VALIDATION -------------------- */
 
@@ -47,7 +48,25 @@ export const sendContactMessage = async (req, res, next) => {
 
     const { name, email, subject, message } = value;
     const normalizedEmail = email.toLowerCase();
-    const supportEmail = process.env.SUPPORT_EMAIL || process.env.EMAIL_USER;
+
+    /**
+     * Resolve admin email (priority order):
+     * 1️⃣ DB-configured supportEmail
+     * 2️⃣ ENV SUPPORT_EMAIL
+     * 3️⃣ EMAIL_USER fallback
+     */
+    const settings = await getEmailSettings();
+
+    const adminEmail =
+      settings?.supportEmail ||
+      process.env.SUPPORT_EMAIL ||
+      process.env.EMAIL_USER;
+
+    if (!adminEmail) {
+      console.warn(
+        "[CONTACT_EMAIL] No admin email configured. Email notification skipped."
+      );
+    }
 
     const doc = await ContactMessage.create({
       name,
@@ -59,24 +78,31 @@ export const sendContactMessage = async (req, res, next) => {
 
     const html = `
       <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:16px;">
-        <h2>New contact message</h2>
+        <h2>New contact message received</h2>
+
         <p><strong>Name:</strong> ${name}</p>
         <p><strong>Email:</strong> ${normalizedEmail}</p>
         <p><strong>Subject:</strong> ${subject}</p>
+
         <p><strong>Message:</strong></p>
-        <p style="white-space:pre-wrap;background:#f3f4f6;padding:8px 10px;border-radius:8px;">${message}</p>
+        <p style="white-space:pre-wrap;background:#f3f4f6;padding:8px 10px;border-radius:8px;">
+          ${message}
+        </p>
+
         <p style="margin-top:16px;font-size:12px;color:#6b7280;">
           Message ID: ${doc._id.toString()}
         </p>
       </div>
     `;
 
-    sendEmailSafely({
-      to: supportEmail,
-      subject: `Contact: ${subject}`,
-      html,
-      replyTo: normalizedEmail,
-    });
+    if (adminEmail) {
+      sendEmailSafely({
+        to: adminEmail,
+        subject: `[Contact Inquiry] ${subject} — ${name}`,
+        html,
+        replyTo: normalizedEmail,
+      });
+    }
 
     return res.json({
       message: "Message sent successfully",
@@ -136,6 +162,7 @@ export const adminListContactMessages = async (req, res, next) => {
         .skip(skip)
         .limit(limit)
         .lean(),
+
       ContactMessage.countDocuments(filter),
     ]);
 
@@ -164,6 +191,7 @@ export const adminGetContactMessageById = async (req, res, next) => {
     }
 
     const msg = await ContactMessage.findById(id).lean();
+
     if (!msg) {
       return res.status(404).json({ message: "Message not found" });
     }
@@ -222,6 +250,7 @@ export const adminDeleteContactMessage = async (req, res, next) => {
     }
 
     const msg = await ContactMessage.findByIdAndDelete(id).lean();
+
     if (!msg) {
       return res.status(404).json({ message: "Message not found" });
     }

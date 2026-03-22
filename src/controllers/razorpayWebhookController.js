@@ -42,7 +42,7 @@ const handlePaymentEvent = async (event, payment, res) => {
     try {
       await markOrderPaidAndGrantAccess({
         orderId: order._id.toString(),
-        paymentId: razorpayPaymentId,
+        paymentId: razorpayPaymentId || "unknown", // ⚠️ safe fallback
         paymentSignature: "razorpay-webhook",
         paymentRaw: {
           source: "razorpay-webhook",
@@ -140,6 +140,33 @@ export const razorpayWebhookHandler = async (req, res) => {
       if (!payment) return res.status(200).send("Invalid payment payload");
 
       return handlePaymentEvent(event, payment, res);
+    }
+
+    /* ================= ORDER EVENTS (NEW) ================= */
+
+    if (event === "order.paid") {
+      const razorpayOrder = payload?.payload?.order?.entity;
+
+      if (!razorpayOrder) {
+        return res.status(200).send("Invalid order payload");
+      }
+
+      const order = await Order.findOne({
+        paymentOrderId: razorpayOrder.id,
+      });
+
+      if (!order || order.status === "PAID") {
+        return res.status(200).send("Ignored");
+      }
+
+      return handlePaymentEvent(
+        "payment.captured",
+        {
+          id: razorpayOrder.payment_id || "unknown",
+          order_id: razorpayOrder.id,
+        },
+        res
+      );
     }
 
     /* ================= REFUND EVENTS ================= */

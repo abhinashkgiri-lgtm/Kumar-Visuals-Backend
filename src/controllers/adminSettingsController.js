@@ -1,11 +1,6 @@
-
 import Joi from "joi";
 import SiteSettings from "../models/SiteSettings.model.js";
 import { deleteObjectWithVerify } from "../services/s3Service.js";
-
-/* --------------------------------------------------
-   JOI SUB-SCHEMAS
--------------------------------------------------- */
 
 const faqSchema = Joi.object({
   question: Joi.string().trim().required(),
@@ -34,16 +29,16 @@ const homepageBannerSchema = Joi.object({
   description: Joi.string().trim().allow("", null),
   imageUrl: Joi.string().uri().allow("", null),
   ctaText: Joi.string().trim().allow("", null),
-  ctaLink: Joi.string().uri().allow("", null),
-}).unknown(true);
+  ctaLink: Joi.string().allow("", null),
+});
 
 const discountBannerSchema = Joi.object({
-  enabled: Joi.boolean().required(),
+  enabled: Joi.boolean().default(false),
   imageUrl: Joi.string().uri().allow("", null),
   title: Joi.string().trim().allow("", null),
   subtitle: Joi.string().trim().allow("", null),
   ctaText: Joi.string().trim().allow("", null),
-  ctaLink: Joi.string().trim().allow("", null),
+  ctaLink: Joi.string().allow("", null),
 }).optional();
 
 const testimonialSchema = Joi.object({
@@ -51,11 +46,7 @@ const testimonialSchema = Joi.object({
   role: Joi.string().trim().allow("", null),
   message: Joi.string().trim().allow("", null),
   avatarUrl: Joi.string().uri().allow("", null),
-}).unknown(true);
-
-/* --------------------------------------------------
-   MAIN SITE SETTINGS SCHEMA
--------------------------------------------------- */
+});
 
 const siteSettingsSchema = Joi.object({
   maintenanceMode: Joi.boolean().optional(),
@@ -89,17 +80,13 @@ const siteSettingsSchema = Joi.object({
 
   socialLinks: socialLinksSchema,
 
-  faqs: Joi.array().items(faqSchema).optional(),
+  faqs: Joi.array().items(faqSchema).max(50).optional(),
 
   testimonials: Joi.array().items(testimonialSchema).optional(),
   homepageBanner: homepageBannerSchema.optional(),
 
   discountBanner: discountBannerSchema,
 });
-
-/* --------------------------------------------------
-   S3 KEY EXTRACTION
--------------------------------------------------- */
 
 function extractFrontendKey(urlOrKey) {
   if (!urlOrKey || typeof urlOrKey !== "string") return null;
@@ -110,9 +97,7 @@ function extractFrontendKey(urlOrKey) {
     const parsed = new URL(urlOrKey);
     const path = (parsed.pathname || "").replace(/^\/+/, "");
     if (path) return path;
-  } catch {
-    // ignore invalid URLs
-  }
+  } catch {}
 
   const bucket = process.env.S3_BUCKET_NAME;
   if (bucket) {
@@ -124,11 +109,6 @@ function extractFrontendKey(urlOrKey) {
 
   return null;
 }
-
-/* --------------------------------------------------
-   SAFE BACKGROUND S3 CLEANUP
--------------------------------------------------- */
-
 
 function runS3Cleanup(items) {
   if (!Array.isArray(items) || items.length === 0) return;
@@ -172,13 +152,6 @@ function runS3Cleanup(items) {
   });
 }
 
-/* --------------------------------------------------
-   CONTROLLERS
--------------------------------------------------- */
-
-/**
- * GET /api/admin/settings/site
- */
 export const getSiteSettings = async (req, res, next) => {
   try {
     const doc = await SiteSettings.getSingleton();
@@ -188,9 +161,6 @@ export const getSiteSettings = async (req, res, next) => {
   }
 };
 
-/**
- * PUT /api/admin/settings/site
- */
 export const updateSiteSettings = async (req, res, next) => {
   try {
     const { error, value } = siteSettingsSchema.validate(req.body, {
@@ -207,16 +177,13 @@ export const updateSiteSettings = async (req, res, next) => {
 
     const doc = await SiteSettings.getSingleton();
 
-    // Capture previous asset URLs
     const prevLogoUrl = doc.logoUrl;
     const prevFaviconUrl = doc.faviconUrl;
     const prevBannerUrl = doc.discountBanner?.imageUrl;
 
-    // Apply updates (PATCH-style)
     Object.assign(doc, value);
     await doc.save();
 
-    // Determine assets to cleanup
     const keysToDelete = [];
 
     if (prevLogoUrl && prevLogoUrl !== doc.logoUrl) {
@@ -231,10 +198,12 @@ export const updateSiteSettings = async (req, res, next) => {
 
     if (prevBannerUrl && prevBannerUrl !== doc.discountBanner?.imageUrl) {
       const key = extractFrontendKey(prevBannerUrl);
-      if (key) keysToDelete.push({ key, field: "discountBanner.imageUrl" });
+      if (key) keysToDelete.push({
+        key,
+        field: "discountBanner.imageUrl",
+      });
     }
 
-    // Run cleanup safely in background
     runS3Cleanup(keysToDelete);
 
     return res.json({

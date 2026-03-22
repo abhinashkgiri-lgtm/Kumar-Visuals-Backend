@@ -8,23 +8,6 @@ import MembershipPlan from "../models/MembershipPlan.model.js";
 const PROMO_CACHE = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
-function getCachedPromo(code) {
-  const cached = PROMO_CACHE.get(code);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
-  return null;
-}
-
-function setCachedPromo(code, data) {
-  PROMO_CACHE.set(code, { data, timestamp: Date.now() });
-  
-  if (PROMO_CACHE.size > 100) {
-    const firstKey = PROMO_CACHE.keys().next().value;
-    PROMO_CACHE.delete(firstKey);
-  }
-}
-
 export async function getMembershipMeta(planKey) {
   if (!planKey || typeof planKey !== "string") return null;
 
@@ -205,41 +188,22 @@ async function applyPromoCode(promoCode, subtotal) {
   }
 
   const code = promoCode.trim().toUpperCase();
-  
-  let promo = getCachedPromo(code);
-  
-  if (!promo) {
-    promo = await PromoCode.findOne({ code, isActive: true }).lean();
-    if (promo) {
-      setCachedPromo(code, promo);
-    }
-  }
+
+  let promo = await PromoCode.findOne({ code, isActive: true });
 
   if (!promo) {
     throw new Error("Invalid or expired promo code");
   }
 
-  if (typeof promo.expiresAt === "string" || promo.expiresAt instanceof Date) {
-    const expiry = new Date(promo.expiresAt);
-    if (expiry <= new Date()) {
-      throw new Error("Promo code has expired");
-    }
+  if (promo.isExpired()) {
+    throw new Error("Promo code has expired or usage limit reached");
   }
 
   if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
     throw new Error(`Minimum order amount: ₹${promo.minOrderAmount}`);
   }
 
-  let discount = 0;
-
-  if (promo.discountType === "PERCENTAGE") {
-    discount = (subtotal * promo.discountValue) / 100;
-    if (promo.maxDiscount) {
-      discount = Math.min(discount, promo.maxDiscount);
-    }
-  } else if (promo.discountType === "FIXED") {
-    discount = promo.discountValue;
-  }
+  let discount = promo.computeDiscount(subtotal);
 
   discount = Math.min(discount, subtotal);
   discount = Number(discount.toFixed(2));
@@ -471,23 +435,28 @@ export async function markOrderPaidAndGrantAccess({
   session.startTransaction();
 
   try {
-    const order = await Order.findById(orderId).session(session);
-    
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: orderId,
+        status: "PENDING",
+      },
+      {
+        $set: {
+          status: "PROCESSING",
+        },
+      },
+      {
+        new: true,
+        session,
+      }
+    );
+
     if (!order) {
-      throw new Error("Order not found");
-    }
-
-    if (order.status === "PAID") {
       await session.commitTransaction();
-      return order;
+      return null;
     }
 
-    if (order.status !== "PENDING") {
-      throw new Error(`Cannot process order with status: ${order.status}`);
-    }
-
-    order.status = "PAID";
-    order.paymentId = paymentId;
+    order.paymentId = paymentId || "unknown";
     order.paymentSignature = paymentSignature;
     order.paymentRaw = paymentRaw;
     order.completedAt = new Date();
@@ -511,6 +480,9 @@ export async function markOrderPaidAndGrantAccess({
     } else {
       await grantProductAccess(order, user, session);
     }
+
+    order.status = "PAID";
+    await order.save({ session });
 
     await session.commitTransaction();
     return order;

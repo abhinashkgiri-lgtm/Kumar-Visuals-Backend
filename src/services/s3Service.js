@@ -14,7 +14,7 @@ const UPLOAD_EXP = Math.min(
   3600
 );
 const CDN_BASE_URL = (process.env.CDN_BASE_URL || "").replace(/\/+$/, "");
-const REGION = process.env.S3_REGION || "ap-south-1";
+const REGION = process.env.S3_REGION || "auto"; // R2 uses "auto" for routing
 
 if (!BUCKET) {
   throw new Error("S3_BUCKET_NAME missing in environment");
@@ -118,8 +118,12 @@ export function publicUrlFromKey(key) {
   if (CDN_BASE_URL) {
     return `${CDN_BASE_URL}/${key}`;
   }
+  // Cloudflare R2 requires a public dev URL or custom domain. 
+  // Set R2_PUBLIC_DEV_URL in your .env (e.g., https://pub-xxxxxxxxxxxx.r2.dev)
+  const fallbackUrl = process.env.R2_PUBLIC_DEV_URL || "";
+  return fallbackUrl ? `${fallbackUrl}/${key}` : key;
   // Use your Backblaze S3 Endpoint for the public URL
-  return `https://${BUCKET}.s3.${REGION}.backblazeb2.com/${key}`;
+  // return `https://${BUCKET}.s3.${REGION}.backblazeb2.com/${key}`;
   // return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
 }
 
