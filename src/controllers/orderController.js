@@ -553,83 +553,54 @@ export const adminGetOrders = async (req, res, next) => {
   try {
     const querySource = req.cleanedQuery || req.query;
 
-    const rawQ = (
-      querySource.search ||
-      querySource.q ||
-      querySource.term ||
-      ""
-    )
-      .toString()
-      .trim();
-
+    const rawQ = (querySource.search || querySource.q || querySource.term || "").toString().trim();
     const statusRaw = (querySource.status || "").toString().trim();
     const typeRaw = (querySource.type || "").toString().trim();
     const providerRaw = (querySource.paymentProvider || "").toString().trim();
-    
-    // --- NEW: User ID capture ---
     const userIdRaw = (querySource.userId || querySource.user || "").toString().trim();
 
     const page = Math.max(Number.parseInt(querySource.page, 10) || 1, 1);
-    const limit = Math.min(
-      Math.max(Number.parseInt(querySource.limit, 10) || 20, 1),
-      100
-    );
+    const limit = Math.min(Math.max(Number.parseInt(querySource.limit, 10) || 20, 1), 1000);
     const skip = (page - 1) * limit;
 
     const filter = {};
 
-    // --- NEW: 0. Specific User Filter ---
     if (userIdRaw) {
       filter.user = userIdRaw;
     }
 
-    // 1. Status Filter
-    const allowedStatuses = [
-      "PENDING",
-      "PAID",
-      "FAILED",
-      "CANCELLED",
-      "REFUNDED",
-    ];
+    const allowedStatuses = ["PENDING", "PAID", "FAILED", "CANCELLED", "REFUNDED"];
     if (statusRaw && allowedStatuses.includes(statusRaw.toUpperCase())) {
       filter.status = statusRaw.toUpperCase();
     }
 
-    // 2. Type Filter
     if (typeRaw.toUpperCase() === "PRODUCT") {
       filter.membershipPlanKey = null;
     } else if (typeRaw.toUpperCase() === "MEMBERSHIP") {
       filter.membershipPlanKey = { $ne: null };
     }
 
-    // 3. Provider Filter
     if (providerRaw) {
       filter.paymentProvider = providerRaw.toLowerCase();
     }
 
-    // 4. Search (Regex on Email, IDs)
     const orConditions = [];
     if (rawQ) {
       const escaped = rawQ.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
       const regex = new RegExp(escaped, "i");
 
-      // A. User Email
-      const matchingUsers = await User.find({ email: regex })
-        .select("_id")
-        .lean();
+      const matchingUsers = await User.find({ email: regex }).select("_id").lean();
       const userIds = matchingUsers.map((u) => u._id);
       
       if (userIds.length) {
         orConditions.push({ user: { $in: userIds } });
       }
 
-      // B. Razorpay IDs
       orConditions.push(
         { paymentOrderId: regex },
         { paymentId: regex }
       );
 
-      // C. Order ID
       const idSearch = rawQ.replace(/^#/, "").trim();
       if (idSearch.length > 0) {
         orConditions.push({
@@ -648,7 +619,6 @@ export const adminGetOrders = async (req, res, next) => {
       filter.$or = orConditions;
     }
 
-    // 5. Sort
     const sortParam = (querySource.sort || "latest").toString();
     let sort = { createdAt: -1 };
     switch (sortParam) {
@@ -663,8 +633,11 @@ export const adminGetOrders = async (req, res, next) => {
         break;
     }
 
+    const requiredFields = "_id user userEmail amount total status type membershipPlanKey membership createdAt";
+
     const [orders, total] = await Promise.all([
       Order.find(filter)
+        .select(requiredFields)
         .populate("user", "name email")
         .sort(sort)
         .skip(skip)
@@ -675,7 +648,6 @@ export const adminGetOrders = async (req, res, next) => {
 
     return res.json({
       data: orders,
-      orders: orders,
       pagination: {
         page,
         limit,
@@ -788,5 +760,4 @@ export const adminGetOrderById = async (req, res, next) => {
   }
 };
 
-// Alias if needed by routes
 export const adminGetAllOrders = adminGetOrders;

@@ -179,44 +179,43 @@ export const getAdminOverviewStats = async (req, res, next) => {
 /* =========================================================
    REVENUE REPORT
    ========================================================= */
-
 export const getRevenueReport = async (req, res, next) => {
   try {
-    const { from, to } = getPeriodFromQuery(req.cleanedQuery || req.query);
+    const querySource = req.cleanedQuery || req.query;
 
-    const groupBy = String(
-      req.cleanedQuery?.groupBy || req.query?.groupBy || "day"
-    );
+    const fromParam = querySource.from;
+    const toParam = querySource.to;
 
-    const by = String(req.cleanedQuery?.by || req.query?.by || "").toLowerCase();
+    const fromDate = fromParam ? new Date(fromParam) : new Date("2000-01-01");
+    const toDate = toParam ? new Date(toParam) : new Date();
 
-    const statusList = String(
-      req.cleanedQuery?.status || req.query?.status || "PAID"
-    )
+    const groupBy = String(querySource.groupBy || "day");
+    const by = String(querySource.by || "").toLowerCase();
+
+    const statusList = String(querySource.status || "PAID")
       .split(",")
       .map((s) => s.trim().toUpperCase());
 
     const match = {
       status: { $in: statusList },
-      createdAt: { $gte: from, $lte: to },
+      createdAt: { $gte: fromDate, $lte: toDate },
     };
 
-    /* ---------- TYPE SPLIT ---------- */
     if (by === "type") {
       const [row] = await Order.aggregate([
         { $match: match },
         {
           $group: {
             _id: null,
-            total: { $sum: { $ifNull: ["$total", 0] } },
+            total: { $sum: "$total" },
             product: {
               $sum: {
-                $cond: [{ $not: ["$membershipPlanKey"] }, "$total", 0],
+                $cond: [{ $eq: ["$membershipPlanKey", null] }, "$total", 0],
               },
             },
             membership: {
               $sum: {
-                $cond: [{ $ifNull: ["$membershipPlanKey", false] }, "$total", 0],
+                $cond: [{ $ne: ["$membershipPlanKey", null] }, "$total", 0],
               },
             },
           },
@@ -224,17 +223,15 @@ export const getRevenueReport = async (req, res, next) => {
       ]);
 
       return res.json({
-        totalRevenue: toNumber(row?.total),
+        totalRevenue: Number(row?.total || 0),
         byType: {
-          PRODUCT: toNumber(row?.product),
-          MEMBERSHIP: toNumber(row?.membership),
+          PRODUCT: Number(row?.product || 0),
+          MEMBERSHIP: Number(row?.membership || 0),
         },
       });
     }
 
-    /* ---------- TIME SERIES ---------- */
-
-    const days = (to.getTime() - from.getTime()) / 86400000;
+    const days = (toDate.getTime() - fromDate.getTime()) / 86400000;
     const unit = groupBy === "month" || days > 60 ? "month" : "day";
 
     const groupId =
@@ -251,7 +248,7 @@ export const getRevenueReport = async (req, res, next) => {
       {
         $group: {
           _id: groupId,
-          revenue: { $sum: { $ifNull: ["$total", 0] } },
+          revenue: { $sum: "$total" },
           orders: { $sum: 1 },
         },
       },
@@ -265,14 +262,14 @@ export const getRevenueReport = async (req, res, next) => {
           unit === "month"
             ? `${y}-${String(m).padStart(2, "0")}`
             : `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
-        revenue: toNumber(row.revenue),
-        orders: toNumber(row.orders),
+        revenue: Number(row.revenue || 0),
+        orders: Number(row.orders || 0),
       };
     });
 
     return res.json({
-      from,
-      to,
+      from: fromDate,
+      to: toDate,
       groupBy: unit,
       totalRevenue: points.reduce((sum, p) => sum + p.revenue, 0),
       totalOrders: points.reduce((sum, p) => sum + p.orders, 0),
@@ -282,7 +279,6 @@ export const getRevenueReport = async (req, res, next) => {
     next(err);
   }
 };
-
 /* =========================================================
    USERS PAYMENTS REPORT
    ========================================================= */

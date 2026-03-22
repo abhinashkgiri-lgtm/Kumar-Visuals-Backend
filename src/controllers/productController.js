@@ -295,15 +295,17 @@ export const deleteProduct = async (req, res, next) => {
 // --- PUBLIC API: Get All (Latest First) ---
 export const getProducts = async (req, res, next) => {
   try {
-    // Note: Schema hides download.url by default (select: false).
-    const products = await Product.find({ visibility: "public" })
-  .sort({ createdAt: -1 })
-  .lean();
+    const requiredFields = "_id title slug price mrp thumbnail previewAudio averageRating category createdAt collectionType isExclusive tags genre audioFormatText";
 
-    
-    const safeProducts = products.map((p) => sanitizeProductForPublic(p));
-    return res.status(200).json(safeProducts);
-  } catch (error_) { next(error_); }
+    const products = await Product.find({ visibility: "public" })
+      .select(requiredFields)
+      .sort({ createdAt: -1 })
+      .lean({ virtuals: true });
+
+    return res.status(200).json(products);
+  } catch (error_) {
+    next(error_);
+  }
 };
 
 // --- PUBLIC API: Get By ID ---
@@ -325,25 +327,41 @@ export const getProductById = async (req, res, next) => {
 export const getRelatedProducts = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const current = await Product.findById(id);
+    
+    const current = await Product.findById(id).select("category tags").lean();
     if (!current) return res.status(404).json({ message: "Product not found" });
 
-    const baseFilter = { _id: { $ne: current._id }, visibility: "public" };
+    const baseFilter = { _id: { $ne: id }, visibility: "public" };
     const orConditions = [];
+    
     if (current.category) orConditions.push({ category: current.category });
-    if (Array.isArray(current.tags) && current.tags.length > 0) orConditions.push({ tags: { $in: current.tags } });
+    if (Array.isArray(current.tags) && current.tags.length > 0) {
+      orConditions.push({ tags: { $in: current.tags } });
+    }
 
     let query = baseFilter;
     if (orConditions.length > 0) query = { ...baseFilter, $or: orConditions };
 
-    let related = await Product.find(query).sort({ createdAt: -1 }).limit(6);
+    const requiredFields = "_id title price mrp thumbnail previewAudio averageRating createdAt isExclusive genre ";
+
+    let related = await Product.find(query)
+      .select(requiredFields)
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .lean({ virtuals: true });
+
     if (!related.length) {
-      related = await Product.find({ _id: { $ne: current._id }, visibility: "public" }).sort({ createdAt: -1 }).limit(6);
+      related = await Product.find(baseFilter)
+        .select(requiredFields)
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .lean({ virtuals: true });
     }
 
-    const safeRelated = related.map((p) => sanitizeProductForPublic(p));
-    return res.json(safeRelated);
-  } catch (error_) { next(error_); }
+    return res.json(related);
+  } catch (error_) { 
+    next(error_); 
+  }
 };
 
 /* ============================================================
@@ -596,70 +614,145 @@ function resetUsageIfNewMonth(usage) {
 ============================================================ */
 
 export const searchProducts = async (req, res, next) => {
-    try {
-        const q = (req.query.q || "").toString().trim();
-        const sortParam = (req.query.sort || "latest").toString(); // Get sort param
-        const page = Math.max(Number.parseInt(req.query.page) || 1, 1);
-        const limit = Math.min(Math.max(Number.parseInt(req.query.limit) || 12, 1), 50);
-        const skip = (page - 1) * limit;
+  try {
+    const q = (req.query.q || "").toString().trim();
+    const sortParam = (req.query.sort || "latest").toString();
+    const page = Math.max(Number.parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit) || 12, 1), 50);
+    const skip = (page - 1) * limit;
 
-        const filter = { visibility: "public" };
-        if(q) {
-            const regex = new RegExp(q, "i");
-            filter.$or = [
-                { title: regex },
-                { category: regex },
-                { tags: { $in: [regex] } }
-            ];
-        }
+    const filter = { visibility: "public" };
+    
+    if (q) {
+      const escaped = q.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+      filter.$or = [
+        { title: regex },
+        { category: regex },
+        { tags: regex }
+      ];
+    }
 
-        // Apply Sorting Logic
-        let sort = {};
-        switch (sortParam) {
-            case "price-low":
-                sort = { price: 1 };
-                break;
-            case "price-high":
-                sort = { price: -1 };
-                break;
-            case "rating":
-                sort = { averageRating: -1, createdAt: -1 };
-                break;
-            case "oldest":
-                sort = { createdAt: 1 };
-                break;
-            case "latest":
-            default:
-                sort = { createdAt: -1 };
-                break;
-        }
+    let sort = { createdAt: -1 };
+    switch (sortParam) {
+      case "price-low":
+        sort = { price: 1 };
+        break;
+      case "price-high":
+        sort = { price: -1 };
+        break;
+      case "rating":
+        sort = { averageRating: -1, createdAt: -1 };
+        break;
+      case "oldest":
+        sort = { createdAt: 1 };
+        break;
+      case "latest":
+      default:
+        sort = { createdAt: -1 };
+        break;
+    }
 
-        const [items, total] = await Promise.all([
-            Product.find(filter)
-                .sort(sort) // Apply sort
-                .skip(skip)
-                .limit(limit) 
-                ,
-            Product.countDocuments(filter)
-        ]);
+    const requiredFields = "_id title price mrp thumbnail previewAudio averageRating createdAt collectionType isExclusive newTagDays";
 
-        const safeItems = items.map(p => sanitizeProductForPublic(p));
-        
-        return res.json({ 
-            products: safeItems, 
-            total,
-            page,
-            limit,
-            totalPages: Math.ceil(total / limit)
-        });
-    } catch(e) { next(e); }
+    const [items, total] = await Promise.all([
+      Product.find(filter)
+        .select(requiredFields)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean({ virtuals: true }),
+      Product.countDocuments(filter)
+    ]);
+
+    return res.json({ 
+      products: items, 
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch(e) { 
+    next(e); 
+  }
 };
 
 export const adminListProducts = async (req, res, next) => {
-    try {
-        const items = await Product.find().limit(20);
-        return res.json({ data: items });
-    } catch(e) { next(e); }
+  try {
+    const querySource = req.query;
+
+    const page = Math.max(parseInt(querySource.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(querySource.limit, 10) || 25, 1), 1000);
+    const skip = (page - 1) * limit;
+
+    const search = (querySource.search || "").toString().trim();
+    const filter = {};
+
+    if (querySource.category && querySource.category !== "all") {
+      filter.category = querySource.category;
+    }
+
+    if (querySource.visibility && querySource.visibility !== "all") {
+      filter.visibility = querySource.visibility.toLowerCase();
+    }
+
+    if (search) {
+      const escaped = search.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+
+      const orConditions = [
+        { title: regex },
+        { tags: regex },
+        { slug: regex },
+        { genre: regex }
+      ];
+
+      const idSearch = search.replace(/^#/, "").trim();
+      if (idSearch.length > 0) {
+        orConditions.push({
+          $expr: {
+            $regexMatch: {
+              input: { $toString: "$_id" },
+              regex: escaped,
+              options: "i",
+            },
+          },
+        });
+      }
+
+      filter.$or = orConditions;
+    }
+
+    let sort = { createdAt: -1 };
+    if (querySource.sort === "createdAt") sort = { createdAt: 1 };
+    else if (querySource.sort === "price-low") sort = { price: 1 };
+    else if (querySource.sort === "price-high" || querySource.sort === "-price") sort = { price: -1 };
+
+    const requiredFields = "_id title slug tags genre price currency mrp visibility thumbnail audioFormatText createdAt";
+
+    const [items, total] = await Promise.all([
+      Product.find(filter)
+        .select(requiredFields)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Product.countDocuments(filter),
+    ]);
+
+    return res.json({
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (e) {
+    next(e);
+  }
 };
 
 export const adminGetProductById = async (req, res, next) => {
