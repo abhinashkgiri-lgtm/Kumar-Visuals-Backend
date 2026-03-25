@@ -117,10 +117,10 @@ const orderSchema = new Schema(
       min: 0,
     },
 
-        /* ---------- STATUS ---------- */
+        /* ---------- STATUS ---------- Added "PROCESSING"*/
         status: {
           type: String,
-          enum: ["PENDING", "PAID", "FAILED", "CANCELLED","REFUND_INITIATED", "REFUNDED"],
+          enum: ["PENDING","PROCESSING", "PAID", "FAILED", "CANCELLED","REFUND_INITIATED", "REFUNDED"],
           default: "PENDING",
           index: true,
         },
